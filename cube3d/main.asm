@@ -11,13 +11,20 @@ section .data
     SYS_MMAP    equ 9
     SYS_SOCKET  equ 41
     SYS_CONNECT equ 42
-    SYS_RECVFROM equ 45     ; <--- NOUVEAU SYSCALL (Lecture non bloquante)
+    SYS_RECVFROM equ 45
     SYS_EXIT    equ 60
+
+    ; Codes Touches (A ajuster selon ton clavier si besoin)
+    KEY_ESC     equ 9
+    KEY_UP      equ 111
+    KEY_DOWN    equ 116
+    KEY_LEFT    equ 113
+    KEY_RIGHT   equ 114
 
     ; Flags
     PROT_READ_WRITE equ 3
     MAP_PRIVATE_ANON equ 34
-    MSG_DONTWAIT     equ 0x40 ; <--- Option : Ne pas attendre s'il n'y a rien à lire
+    MSG_DONTWAIT     equ 0x40
 
     sockaddr:
         dw AF_UNIX
@@ -68,8 +75,8 @@ section .data
     ; --- Variables du Jeu ---
     box_x:  dd 350
     box_y:  dd 250
-    box_dx: dd 4
-    box_dy: dd 4
+    box_dx: dd 0        ; Vitesse X (0 au départ)
+    box_dy: dd 0        ; Vitesse Y (0 au départ)
     box_w:  dd 50
     box_h:  dd 50
 
@@ -97,7 +104,7 @@ _start:
     mov rdx, x11_auth_len
     syscall
 
-    ; 4. Read Response (Ici on garde READ car on DOIT attendre la réponse)
+    ; 4. Read Response
     mov rax, SYS_READ
     mov rdi, r12
     mov rsi, server_response
@@ -107,7 +114,7 @@ _start:
     ; 5. Parsing
     mov rbx, server_response
     cmp byte [rbx], 1
-    jne error
+    jne error                   ; <--- Utilise le label error
 
     mov eax, [rbx + 12]
     inc eax
@@ -141,7 +148,7 @@ aligned:
     mov r9, 0
     syscall
     cmp rax, 0
-    jl error
+    jl error                    ; <--- Utilise le label error
     mov [buffer_addr], rax
 
     ; 7. Setup X11
@@ -185,57 +192,38 @@ game_loop:
     rep stosd
 
     ; -----------------------------------------------
-    ; PHYSIQUE AVEC SECURITÉ (ANTI-CRASH)
+    ; PHYSIQUE : FROTTEMENT ET LIMITES
     ; -----------------------------------------------
     
-    ; --- Update X ---
+    ; Appliquer la vitesse
     mov eax, [box_x]
     add eax, [box_dx]
     mov [box_x], eax
     
-    ; Vérif Gauche
-    cmp eax, 0
-    jl hit_left
-    
-    ; Vérif Droite (800 - 50 = 750)
-    cmp eax, 750
-    jg hit_right
-    
-    jmp check_y ; Si tout va bien, on passe au Y
-
-hit_left:
-    mov dword [box_x], 0    ; <--- FIX: On remet à 0 pour ne pas être négatif
-    neg dword [box_dx]      ; Rebond
-    jmp check_y
-
-hit_right:
-    mov dword [box_x], 750  ; <--- FIX: On remet à 750
-    neg dword [box_dx]      ; Rebond
-
-check_y:
-    ; --- Update Y ---
     mov eax, [box_y]
     add eax, [box_dy]
     mov [box_y], eax
 
-    ; Vérif Haut
-    cmp eax, 0
-    jl hit_top
-    
-    ; Vérif Bas (600 - 50 = 550)
-    cmp eax, 550
-    jg hit_bottom
-    
-    jmp draw_box
+    ; --- Limites X ---
+    cmp dword [box_x], 0
+    jge check_right
+    mov dword [box_x], 0        ; Bloque à gauche
+    jmp check_y_limit
+check_right:
+    cmp dword [box_x], 750
+    jle check_y_limit
+    mov dword [box_x], 750      ; Bloque à droite
 
-hit_top:
-    mov dword [box_y], 0    ; <--- FIX ANTI-CRASH
-    neg dword [box_dy]
+check_y_limit:
+    ; --- Limites Y ---
+    cmp dword [box_y], 0
+    jge check_bottom
+    mov dword [box_y], 0        ; Bloque en haut
     jmp draw_box
-
-hit_bottom:
-    mov dword [box_y], 550  ; <--- FIX ANTI-CRASH
-    neg dword [box_dy]
+check_bottom:
+    cmp dword [box_y], 550
+    jle draw_box
+    mov dword [box_y], 550      ; Bloque en bas
 
     ; -----------------------------------------------
     ; DESSIN DU CARRE
@@ -313,26 +301,69 @@ send_slices:
     jmp send_slices
 
     ; -----------------------------------------------
-    ; LECTURE NON BLOQUANTE (FIX LAG)
+    ; LECTURE DES INPUTS (CLAVIER)
     ; -----------------------------------------------
 events_check:
-    ; Au lieu de SYS_READ, on utilise SYS_RECVFROM (45)
-    ; avec le flag MSG_DONTWAIT (0x40)
-    
     mov rax, SYS_RECVFROM
-    mov rdi, r12                ; Socket
-    mov rsi, server_response    ; Buffer
-    mov rdx, 32768              ; Taille
-    mov r10, MSG_DONTWAIT       ; <--- MAGIQUE : Si pas de data, on continue !
+    mov rdi, r12
+    mov rsi, server_response
+    mov rdx, 32768
+    mov r10, MSG_DONTWAIT
     mov r8, 0
     mov r9, 0
     syscall
-    
-    ; Si rax > 0 (On a lu un truc), on pourrait vérifier si c'est "Echap"
-    ; Mais pour l'instant on ignore.
-    
+
+    cmp rax, 0
+    jle game_loop           ; Rien reçu, on retourne dessiner
+
+    ; --- Analyse du paquet ---
+    cmp byte [server_response], 2   ; Est-ce un KeyPress ?
+    jne game_loop                   ; Sinon, on ignore
+
+    ; --- Lecture du Keycode (Octet 1) ---
+    movzx rbx, byte [server_response + 1] ; rbx contient le code de la touche
+
+    ; --- Comparaison des touches ---
+    cmp rbx, KEY_ESC
+    je close_app
+    cmp rbx, KEY_LEFT
+    je go_left
+    cmp rbx, KEY_RIGHT
+    je go_right
+    cmp rbx, KEY_UP
+    je go_up
+    cmp rbx, KEY_DOWN
+    je go_down
+
     jmp game_loop
 
+; --- Actions ---
+go_left:
+    mov dword [box_dx], -2
+    mov dword [box_dy], 0
+    jmp game_loop
+
+go_right:
+    mov dword [box_dx], 2
+    mov dword [box_dy], 0
+    jmp game_loop
+
+go_up:
+    mov dword [box_dx], 0
+    mov dword [box_dy], -2
+    jmp game_loop
+
+go_down:
+    mov dword [box_dx], 0
+    mov dword [box_dy], 2
+    jmp game_loop
+
+close_app:
+    mov rax, SYS_EXIT
+    mov rdi, 0
+    syscall
+
+; --- C'EST ICI QUE TU AVAIS OUBLIÉ LE LABEL ERROR ---
 error:
     mov rax, SYS_EXIT
     mov rdi, 1
