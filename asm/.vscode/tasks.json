@@ -1,0 +1,19 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build & Run ASM",
+            "type": "shell",
+            "command": "nasm -f elf64 -g -F dwarf ${file} -o ${fileDirname}/${fileBasenameNoExtension}.o && ld -m elf_x86_64 ${fileDirname}/${fileBasenameNoExtension}.o -o ${fileDirname}/${fileBasenameNoExtension} && ${fileDirname}/${fileBasenameNoExtension}",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+            "problemMatcher": []
+        }
+    ]
+}
